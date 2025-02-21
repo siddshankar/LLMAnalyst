@@ -2,110 +2,75 @@ import logging
 import xml.etree.ElementTree as ET
 import subprocess
 import os
+import re
+import agent
+import kagglehub
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-def call_llm(prompt: str) -> str:
-    """
-    Placeholder function to simulate calling an LLM API.
-    Replace this with your actual API call. 
-
-    Expected XML response for code generation:
-    <response>
-      <code><![CDATA[
-         # your python code here
-      ]]></code>
-      <done>true|false</done>
-    </response>
-
-    And for summary generation:
-    <response>
-      <summary>Your summary text here</summary>
-      <graphs>Your graph instructions here</graphs>
-    </response>
-    """
-    logging.info("LLM Prompt:\n%s", prompt)
-    # Simulated response for demonstration purposes.
-    # You might vary the simulated output based on the prompt in an actual implementation.
-    if "Generate python code" in prompt or "modify the python code" in prompt:
-        simulated_response = """
-        <response>
-          <code><![CDATA[
-import pandas as pd
-import numpy as np
-
-def analyze_data(csv_file):
-    # Read CSV data
-    df = pd.read_csv(csv_file)
-    # Conduct basic statistical analysis:
-    # (e.g., computing descriptive statistics)
-    results = df.describe().to_dict()
-    # Output the analysis results
-    print("Statistical Analysis Results:")
-    print(results)
-
-if __name__ == '__main__':
-    analyze_data("dummy.csv")
-        ]]></code>
-          <done>false</done>
-        </response>
-        """
-    else:
-        # Simulated summary response.
-        simulated_response = """
-        <response>
-          <summary><![CDATA[
-The analysis indicates that the dataset provides moderate support for the provided axioms.
-Key statistics suggest trends consistent with the hypothesis, although further data cleaning may be required.
-          ]]></summary>
-          <graphs><![CDATA[
-Bar charts comparing means across groups and scatter plots to show correlation trends.
-          ]]></graphs>
-        </response>
-        """
-    return simulated_response
-
-def parse_code_response(response_xml: str) -> (str, bool):
+def parse_code_response(response_xml: str) -> (str, bool,list):
     """
     Parse the XML response from the LLM for code generation.
     Returns a tuple (code, done) where code is the python code string,
     and done is a boolean indicating if the analysis is complete.
     """
-    try:
-        root = ET.fromstring(response_xml)
-    except ET.ParseError as e:
-        logging.error("Error parsing XML: %s", e)
-        return "", False
+    match = re.search(r'<(\w+)[^>]*>.*?</\1>', response_xml, re.DOTALL)
+    if match:
+        first_element_str = match.group(0)
+        print(first_element_str)
+        # Now you can parse this string if needed
+        try:
+            root = ET.fromstring(first_element_str)
+            # Further processing with 'root'
+        except ET.ParseError as e:
+            print(f"Error parsing XML: {e}")
+    else:
+        print("No valid XML element found.")
+
 
     code_elem = root.find('code')
     code_text = ""
     if code_elem is not None and code_elem.text:
         code_text = code_elem.text.strip()
+    req_elem = None
+    try:
+        req_elem = root.find('requirements').text
+    except:
+        print("no requirements.txt, no need to run")
 
     done_elem = root.find('done')
     done = (done_elem is not None and done_elem.text.strip().lower() == "true")
+
     logging.info("Parsed code; LLM done flag: %s", done)
-    return code_text, done
+
+    return code_text, done, req_elem
 
 def parse_summary_response(response_xml: str) -> (str, str):
     """
     Parse the XML response from the LLM for summary and graph instructions.
     Returns a tuple (summary, graphs) as strings.
     """
-    try:
-        root = ET.fromstring(response_xml)
-    except ET.ParseError as e:
-        logging.error("Error parsing summary XML: %s", e)
-        return "", ""
-    
+    match = re.search(r'<(\w+)[^>]*>.*?</\1>', response_xml, re.DOTALL)
+    if match:
+        first_element_str = match.group(0)
+        print(first_element_str)
+        # Now you can parse this string if needed
+        try:
+            root = ET.fromstring(first_element_str)
+            # Further processing with 'root'
+        except ET.ParseError as e:
+            print(f"Error parsing XML: {e}")
+    else:
+        print("No valid XML element found.")
+
     summary_elem = root.find('summary')
     graphs_elem = root.find('graphs')
     summary_text = summary_elem.text.strip() if summary_elem is not None and summary_elem.text else ""
     graphs_text = graphs_elem.text.strip() if graphs_elem is not None and graphs_elem.text else ""
     return summary_text, graphs_text
 
-def iterative_statistical_analysis(question: str, axioms: list, csv_file: str):
+def iterative_statistical_analysis(llmAgent: agent.LitellmFileSystemAgent,question: str, axioms: list, csv_file: str, method: str):
     """
     Iteratively generates and refines python code to conduct statistical analysis on a given dataset.
     The analysis is guided by the provided question and axioms.
@@ -129,25 +94,65 @@ def iterative_statistical_analysis(question: str, axioms: list, csv_file: str):
         iteration += 1
         if iteration == 1:
             prompt = (
-                f"Using the following information:\n{conversation_context}\n\n"
-                "Generate python code that performs statistical analysis on the dataset provided in the CSV file. "
-                "The code should analyze the dataset to assess support for the axioms or the question, using appropriate "
-                "statistical techniques. Return your response in XML format with a <code> tag containing the python code, "
-                "and a <done> tag indicating if the analysis is complete (true/false)."
-            )
+        f"Given the following context:\n"
+        f"Question: {question}\n"
+        f"Axioms: {axioms}\n"
+        f"CSV File: {csv_file}\n\n"
+        f"Your task is to generate Python code that performs a thorough statistical analysis using {method} on the dataset provided in the CSV file. "
+        "The code should evaluate whether the dataset supports the provided axioms or answers the question by using appropriate "
+        "statistical techniques (such as hypothesis testing, descriptive statistics, etc.). In your analysis, consider "
+        "handling potential issues such as missing values, outliers, or data transformations.\n\n"
+        "There will be several iterations of creating the code and modifying it, please get important information like the size and columns"
+        "of the dataset in the first iteration, and debug and polish the code over the next few iterations."
+        "Return your response in XML format. The XML should include a <code> tag containing the Python code and a <done> tag indicating "
+        "if the analysis is complete (true/false). In addition, please include any dependencies in the <requirements> tag separated by new line as shown \n\n"
+        "For example, your response might look like:\n"
+        "<response>\n"
+        "  <code><![CDATA[\n"
+        "import pandas as pd\n"
+        "import numpy as np\n\n"
+        "def analyze_data(csv_file):\n"
+        "    df = pd.read_csv(csv_file)\n"
+        f"    # Perform descriptive statistics using {method} \n"
+        "    stats = df.describe()\n"
+        "    # Optionally add hypothesis testing or regression analysis here\n"
+        "    print('Analysis Results:', stats)\n\n"
+        "if __name__ == '__main__':\n"
+        "    analyze_data('your_file.csv')\n"
+        "]]></code>\n"
+        "  <done>false</done>\n"
+        "<requirements>xgb\nscipy\nsklearn\n</requirements>\n"
+        "</response>\n"
+    )
         else:
             prompt = (
-                f"The previously generated code was executed and produced the following output:\n{output}\n\n"
-                "Please modify the python code as necessary to improve the statistical analysis so that it more clearly addresses "
-                "the question and the provided axioms (or suggests a new axiom if needed). Return your response in XML format "
-                "with a <code> tag for the updated code and a <done> tag indicating if the analysis is complete (true/false)."
+                f"Original Context:\n"
+                f"Question: {question}\n"
+                f"Axioms: {axioms}\n"
+                f"CSV File: {csv_file}\n\n"
+                "Previously generated Python code:\n"
+                f"{current_code}\n\n"
+                "The above code was executed and produced the following output:\n"
+                f"{output}\n\n"
+                "This output reflects the current state of the statistical analysis. Based on the original context and the execution output, "
+                "please refine the Python code to better address the question and the provided axioms. Consider adjustments such as improving data handling, "
+                "applying alternative statistical methods, or incorporating additional insights (e.g., suggesting new axioms if warranted by the data).\n\n"
+                "Return your updated code in XML format with a <code> tag for the Python code and a <done> tag indicating whether the analysis is now complete (true/false).\n\n"
+                "For example, your response might be:\n"
+                "<response>\n"
+                "  <code><![CDATA[\n"
+                "# Updated code with improved analysis...\n"
+                "]]></code>\n"
+                "  <done>false</done>\n"
+                "</response>\n"
             )
+
         
         logging.info("Iteration %d - Sending prompt to LLM for code generation.", iteration)
-        response_xml = call_llm(prompt)
-        logging.info("Iteration %d - Received LLM response:\n%s", iteration, response_xml)
+        response = llmAgent.Call_llm("user", prompt)
+        logging.info("Iteration %d - Received LLM response:\n%s", iteration, response)
         
-        new_code, done = parse_code_response(response_xml)
+        new_code, done, req_elem = parse_code_response(response)
         if not new_code:
             logging.error("Iteration %d - No code returned by LLM. Exiting loop.", iteration)
             break
@@ -162,6 +167,25 @@ def iterative_statistical_analysis(question: str, axioms: list, csv_file: str):
             logging.error("Iteration %d - Error writing code to file: %s", iteration, e)
             break
         
+        if req_elem != None:
+            try:
+                with open("requirements.txt", "w") as f:
+                    f.write(req_elem)
+                logging.info("Iteration %d - Saved requirements.txt to %s", iteration, "requirements.txt")
+            except Exception as e:
+                logging.error("Iteration %d - Error writing reqs to file: %s", iteration, e)
+                break
+
+            try:
+                # Install packages from requirements.txt
+                subprocess.run(["pip", 'install', '-r', 'requirements.txt'])
+
+            except subprocess.CalledProcessError as e:
+                output = output = e.stdout + "\nError:\n" + e.stderr
+                logging.error("Iteration %d - Error during requirements installation:\n%s", iteration, output)
+                done = False
+
+
         # Run the generated python code and capture its output
         try:
             result = subprocess.run(["python", file_name], capture_output=True, text=True, check=True)
@@ -170,16 +194,29 @@ def iterative_statistical_analysis(question: str, axioms: list, csv_file: str):
         except subprocess.CalledProcessError as e:
             output = e.stdout + "\nError:\n" + e.stderr
             logging.error("Iteration %d - Error during code execution:\n%s", iteration, output)
+            done = False
     
     # After iterations, ask LLM to generate a summary and graph instructions
     summary_prompt = (
-        f"Based on the final analysis output below:\n{output}\n\n"
-        "Generate a summary of the statistical analysis results and provide instructions for any graphs that would help "
-        "visualize the findings. Return your response in XML format with a <summary> tag for the text summary and a "
-        "<graphs> tag for the graph instructions."
-    )
+    "Previous Context:"
+    f"Question: {question}\n"
+    f"Axioms: {axioms}\n"
+    f"Based on the final output of the statistical analysis:\n{output}\n\n"
+    "Please provide a comprehensive summary of the analysis, including key statistical findings, observed trends, and any conclusions "
+    "regarding the support for the provided axioms or the answer to the question.\n\n"
+    "Return your response in XML format with a <summary> tag containing the text summary and a <graphs> tag for the graph instructions.\n\n"
+    "For example, your response might be:\n"
+    "<response>\n"
+    "  <summary><![CDATA[\n"
+    "The analysis reveals a significant positive correlation between variable X and outcome Y, supporting the hypothesis that ...\n"
+    "]]></summary>\n"
+    "  <graphs><![CDATA[\n"
+    "Generate a scatter plot of X versus Y with a regression line overlay and a histogram of the residuals.\n"
+    "]]></graphs>\n"
+    "</response>\n"
+)
     logging.info("Sending final prompt to LLM for summary and graph generation.")
-    summary_response_xml = call_llm(summary_prompt)
+    summary_response_xml = llmAgent.Call_llm("user", summary_prompt)
     logging.info("Received summary response from LLM:\n%s", summary_response_xml)
     
     summary, graphs = parse_summary_response(summary_response_xml)
@@ -190,14 +227,18 @@ def iterative_statistical_analysis(question: str, axioms: list, csv_file: str):
 
 if __name__ == '__main__':
     # Example usage with dummy parameters (ensure that 'data.csv' exists in the same folder)
-    question = "Does the dataset support the hypothesis that increased exercise improves health outcomes?"
+    question = "How do various factors affect house prices?"
     axioms = [
-        "Regular exercise improves cardiovascular health",
-        "Exercise reduces stress levels"
+        "Square footage is correlated with number of bedrooms and therefore house price",
+        "Location is also important as it can increase or decrease crime rate and house size and therefore prices"
     ]
-    csv_file = "data.csv"  # Replace with your actual CSV file
-    
-    final_summary, graph_instructions = iterative_statistical_analysis(question, axioms, csv_file)
-    
+
+    path = kagglehub.dataset_download("sukhmandeepsinghbrar/housing-price-dataset")
+
+    csv_file = path  # Replace with your actual CSV file
+
+    llmAgent = agent.LitellmFileSystemAgent()
+
+    final_summary, graph_instructions = iterative_statistical_analysis(llmAgent ,question, axioms, csv_file, "XGBoost")
     print("\nFinal Summary:\n", final_summary)
     print("\nGraph Instructions:\n", graph_instructions)

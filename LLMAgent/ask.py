@@ -4,34 +4,6 @@ import xml.etree.ElementTree as ET
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-def call_llm(prompt: str) -> str:
-    """
-    Placeholder function to simulate calling an LLM API.
-    Replace the simulated response with an actual API call.
-    
-    The expected XML response format is:
-    <response>
-      <questions>
-         <question>First probing question?</question>
-         <question>Second probing question?</question>
-         ...
-      </questions>
-      <done>true|false</done>
-    </response>
-    """
-    logging.info("Calling LLM with prompt: %s", prompt)
-    # Simulated response for demonstration purposes:
-    simulated_response = """
-    <response>
-      <questions>
-         <question>What is the main subject of your question?</question>
-         <question>Can you provide more context or details?</question>
-      </questions>
-      <done>false</done>
-    </response>
-    """
-    return simulated_response
-
 def parse_llm_response(response_xml: str):
     """
     Parse the XML response from the LLM.
@@ -85,7 +57,7 @@ def ask():
             "</response>\n"
         )
         logging.info("Sending prompt to LLM:\n%s", prompt)
-        response_xml = call_llm(prompt)
+        response_xml = (prompt)
         logging.info("Received LLM response:\n%s", response_xml)
 
         questions, done = parse_llm_response(response_xml)
