@@ -1,8 +1,74 @@
 import logging
 import xml.etree.ElementTree as ET
+import re
+import agent
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+def parse_distilled_response(response_xml: str) -> (str, list):
+    """
+    Parses the distilled XML response into a distilled question and a list of axioms.
+
+    Expected XML format:
+    <response>
+      <distilled_question>Your distilled, informative question here</distilled_question>
+      <axioms>
+         <axiom id="unique_axiom_id_1">
+             <text>A clear statement of the key concept or relation</text>
+             <supporting_evidence>A brief rationale or explanation supporting this axiom</supporting_evidence>
+         </axiom>
+         <axiom id="unique_axiom_id_2">
+             <text>A clear statement of another key concept or relation</text>
+             <supporting_evidence>A brief rationale or explanation supporting this axiom</supporting_evidence>
+         </axiom>
+         ... (additional axioms)
+      </axioms>
+    </response>
+
+    Returns:
+        distilled_question (str): The distilled question.
+        axioms (list): A list of dictionaries, each with keys 'id', 'text', and 'supporting_evidence'.
+    """
+    distilled_question = ""
+    axioms = []
+    try:
+        root = ET.fromstring(response_xml)
+        
+        # Extract the distilled question.
+        dq_elem = root.find("distilled_question")
+        if dq_elem is not None and dq_elem.text:
+            distilled_question = dq_elem.text.strip()
+        else:
+            logging.warning("No distilled_question element found in the response.")
+        
+        # Extract each axiom.
+        axioms_elem = root.find("axioms")
+        if axioms_elem is not None:
+            for axiom_elem in axioms_elem.findall("axiom"):
+                # Get the unique ID from the attribute.
+                axiom_id = axiom_elem.get("id", "").strip()
+                
+                # Extract the axiom text.
+                text_elem = axiom_elem.find("text")
+                axiom_text = text_elem.text.strip() if text_elem is not None and text_elem.text else ""
+                
+                # Extract the supporting evidence.
+                evidence_elem = axiom_elem.find("supporting_evidence")
+                supporting_evidence = evidence_elem.text.strip() if evidence_elem is not None and evidence_elem.text else ""
+                
+                axioms.append({
+                    "id": axiom_id,
+                    "text": axiom_text,
+                    "supporting_evidence": supporting_evidence
+                })
+        else:
+            logging.warning("No axioms element found in the response.")
+    
+    except Exception as e:
+        logging.error("Error parsing distilled response XML: %s", e)
+    
+    return distilled_question, axioms
 
 def parse_llm_response(response_xml: str):
     """
@@ -10,11 +76,18 @@ def parse_llm_response(response_xml: str):
     Returns a tuple (questions, done) where questions is a list of probing questions,
     and done is a boolean indicating whether the LLM is finished.
     """
-    try:
-        root = ET.fromstring(response_xml)
-    except ET.ParseError as e:
-        logging.error("Error parsing XML: %s", e)
-        return [], False
+    match = re.search(r'<(\w+)[^>]*>.*?</\1>', response_xml, re.DOTALL)
+    if match:
+        first_element_str = match.group(0)
+        print(first_element_str)
+        # Now you can parse this string if needed
+        try:
+            root = ET.fromstring(first_element_str)
+            # Further processing with 'root'
+        except ET.ParseError as e:
+            print(f"Error parsing XML: {e}")
+    else:
+        print("No valid XML element found.")
 
     questions = []
     questions_node = root.find('questions')
@@ -28,7 +101,7 @@ def parse_llm_response(response_xml: str):
     logging.info("Parsed %d question(s); LLM done: %s", len(questions), done)
     return questions, done
 
-def ask():
+def ask(llmAgent) -> (str,list):
     """
     Interactive method that:
     1. Prompts the user for a question.
@@ -73,10 +146,41 @@ def ask():
             conversation_context += f"\nLLM: {q}\nUser: {answer}"
 
         logging.info("Updated conversation context:\n%s", conversation_context)
-
+    
     print("\nLLM has fully understood your question.")
     logging.info("Final conversation context:\n%s", conversation_context)
-    return conversation_context
+    
+    logging.info("Prompting LLM to come up with distilled question and axioms")
+    distill_prompt = (
+    "Based on the following conversation from the ask step:\n\n"
+    "=== Conversation Start ===\n"
+    f"{conversation_context}"
+    "=== Conversation End ===\n\n"
+    "Task:\n"
+    "1. Distill the core question into a single, succinct, and informative question.\n"
+    "2. Identify and list the key concepts and relationships that are needed to answer this question. "
+    "For each concept or relationship, define an axiom that is supportable and addresses a part of the question.\n\n"
+    "Return your response in XML format using the following structure:\n\n"
+    "<response>\n"
+    "  <distilled_question>Your distilled, informative question here</distilled_question>\n"
+    "  <axioms>\n"
+    "     <axiom id=\"unique_axiom_id_1\">\n"
+    "         <text>A clear statement of the key concept or relation</text>\n"
+    "         <supporting_evidence>A brief rationale or explanation supporting this axiom</supporting_evidence>\n"
+    "     </axiom>\n"
+    "     <axiom id=\"unique_axiom_id_2\">\n"
+    "         <text>A clear statement of another key concept or relation</text>\n"
+    "         <supporting_evidence>A brief rationale or explanation supporting this axiom</supporting_evidence>\n"
+    "     </axiom>\n"
+    "     ... (add additional axioms as needed)\n"
+    "  </axioms>\n"
+    "</response>\n\n"
+    "Make sure that each axiom is supportable and directly addresses a component of the distilled question."
+    )
+    
+    response_xml = llmAgent.Call_llm("user",distill_prompt)
+    question,axioms = parse_distilled_response(response_xml)
+    return question,axioms
 
 if __name__ == '__main__':
     ask()
